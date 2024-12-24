@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Transfer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            text-align: center;
+        }
+
+        button,
+        input {
+            margin: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Local File Transfer</h1>
+    <p>Send files securely over a local network.</p>
+
+    <h3>Send a File</h3>
+    <input type="file" id="fileInput" />
+    <button id="sendFileButton">Send File</button>
+
+    <h3>Available Devices</h3>
+    <ul id="deviceList"></ul>
+
+    <div id="status"></div>
+
+    <script src="renderer.js"></script>
+</body>
+
+</html>
