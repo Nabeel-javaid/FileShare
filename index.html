@@ -5,32 +5,237 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Transfer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            padding: 20px;
-            text-align: center;
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --background: #f8fafc;
+            --surface: #ffffff;
+            --text: #1e293b;
+            --text-light: #64748b;
+            --error: #ef4444;
+            --success: #22c55e;
         }
 
-        button,
-        input {
-            margin: 10px;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--background);
+            color: var(--text);
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+
+        header {
+            background-color: var(--surface);
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+
+        .card {
+            background: var(--surface);
+            border-radius: 0.75rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .status-badge.online {
+            background-color: rgba(34, 197, 94, 0.1);
+            color: var(--success);
+        }
+
+        .device-list {
+            margin-top: 1rem;
+        }
+
+        .device-item {
+            display: flex;
+            align-items: center;
+            padding: 1rem;
+            background: var(--background);
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .device-info {
+            flex: 1;
+        }
+
+        .device-name {
+            font-weight: 500;
+        }
+
+        .device-status {
+            font-size: 0.875rem;
+            color: var(--text-light);
+        }
+
+        .send-button {
+            padding: 0.5rem 1rem;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-left: 1rem;
+        }
+
+        .send-button:hover {
+            background-color: var(--primary-dark);
+        }
+
+        .file-drop-zone {
+            border: 2px dashed var(--primary);
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 1rem;
+            transition: all 0.2s;
+        }
+
+        .file-drop-zone:hover {
+            background-color: rgba(37, 99, 235, 0.05);
+        }
+
+        .file-list {
+            margin-top: 1rem;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background-color: var(--background);
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background-color: var(--background);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background-color: var(--primary);
+            transition: width 0.3s ease;
+        }
+
+        #notifications {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            z-index: 1000;
+        }
+
+        .notification {
+            background-color: var(--surface);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 300px;
+            animation: slideIn 0.3s ease;
+        }
+
+        .notification-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+            }
+
+            to {
+                transform: translateX(0);
+            }
+        }
+
+        #fileInput {
+            display: none;
         }
     </style>
 </head>
 
 <body>
-    <h1>Local File Transfer</h1>
-    <p>Send files securely over a local network.</p>
+    <header>
+        <div class="header-content">
+            <h1>File Transfer</h1>
+            <div id="networkStatus" class="status-badge online">Connected</div>
+        </div>
+    </header>
 
-    <h3>Send a File</h3>
-    <input type="file" id="fileInput" />
-    <button id="sendFileButton">Send File</button>
+    <div class="container">
+        <!-- File Transfer Section -->
+        <div>
+            <div class="card">
+                <h2>Send Files</h2>
+                <div id="dropZone" class="file-drop-zone" onclick="document.getElementById('fileInput').click()">
+                    <div style="font-size: 2em">📁</div>
+                    <p>Click to select files or drag and drop</p>
+                </div>
+                <input type="file" id="fileInput" multiple>
+                <div id="selectedFiles" class="file-list"></div>
+            </div>
 
-    <h3>Available Devices</h3>
-    <ul id="deviceList"></ul>
+            <div class="card">
+                <h2>Recent Transfers</h2>
+                <div id="transferHistory" class="file-list"></div>
+            </div>
+        </div>
 
-    <div id="status"></div>
+        <!-- Available Devices Section -->
+        <div class="card">
+            <h2>Available Devices</h2>
+            <div id="deviceList" class="device-list"></div>
+        </div>
+    </div>
+
+    <div id="notifications"></div>
 
     <script src="renderer.js"></script>
 </body>

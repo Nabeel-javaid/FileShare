@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Send Files</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .file-input-wrapper {
+            text-align: center;
+            padding: 40px 20px;
+            border: 2px dashed #2563eb;
+            border-radius: 8px;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .file-input-wrapper:hover,
+        .file-input-wrapper.dragover {
+            background-color: #f8fafc;
+            border-color: #1d4ed8;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        button {
+            background-color: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 10px;
+            transition: background-color 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: #1d4ed8;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        #progress {
+            margin-top: 20px;
+            display: none;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background-color: #2563eb;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        #selectedFiles {
+            margin-top: 10px;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            margin-bottom: 5px;
+        }
+
+        .file-info {
+            flex: 1;
+            margin-right: 10px;
+        }
+
+        .file-name {
+            font-weight: 500;
+        }
+
+        .file-size {
+            font-size: 0.875rem;
+            color: #64748b;
+        }
+
+        .remove-file {
+            color: #ef4444;
+            cursor: pointer;
+            padding: 5px;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>Send Files</h2>
+        <div id="status" class="status">Connecting...</div>
+
+        <div class="file-input-wrapper" id="dropZone">
+            <div style="font-size: 2em">📁</div>
+            <p>Click to select files or drag and drop</p>
+        </div>
+
+        <input type="file" id="fileInput" multiple>
+        <div id="selectedFiles"></div>
+        <button id="sendButton" disabled>Send Files</button>
+
+        <div id="progress">
+            <h3>Transfer Progress</h3>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <div id="progressText">0%</div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const status = document.getElementById('status');
+        const fileInput = document.getElementById('fileInput');
+        const selectedFiles = document.getElementById('selectedFiles');
+        const sendButton = document.getElementById('sendButton');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const dropZone = document.getElementById('dropZone');
+
+        let selectedFilesList = new Set();
+
+        socket.on('connect', () => {
+            status.textContent = 'Connected';
+            status.className = 'status connected';
+
+            socket.emit('register-device', {
+                name: 'Web Client',
+                type: 'web'
+            });
+        });
+
+        socket.on('disconnect', () => {
+            status.textContent = 'Disconnected';
+            status.className = 'status disconnected';
+            sendButton.disabled = true;
+        });
+
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                selectedFilesList.add(file);
+            });
+            updateFilesList();
+        }
+
+        function updateFilesList() {
+            selectedFiles.innerHTML = '';
+            selectedFilesList.forEach(file => {
+                const fileElement = document.createElement('div');
+                fileElement.className = 'file-item';
+                fileElement.innerHTML = `
+                    <div class="file-info">
+                        <div class="file-name">${file.name}</div>
+                        <div class="file-size">${formatFileSize(file.size)}</div>
+                    </div>
+                    <div class="remove-file" onclick="removeFile('${file.name}')">×</div>
+                `;
+                selectedFiles.appendChild(fileElement);
+            });
+
+            sendButton.disabled = selectedFilesList.size === 0;
+        }
+
+        function removeFile(fileName) {
+            selectedFilesList.forEach(file => {
+                if (file.name === fileName) {
+                    selectedFilesList.delete(file);
+                }
+            });
+            updateFilesList();
+        }
+
+        sendButton.addEventListener('click', async () => {
+            if (selectedFilesList.size === 0) return;
+
+            sendButton.disabled = true;
+            progress.style.display = 'block';
+
+            let totalSent = 0;
+            const totalFiles = selectedFilesList.size;
+
+            for (const file of selectedFilesList) {
+                try {
+                    await sendFile(file, totalSent + 1, totalFiles);
+                    totalSent++;
+                } catch (error) {
+                    alert('Error sending file: ' + error.message);
+                    break;
+                }
+            }
+
+            selectedFilesList.clear();
+            updateFilesList();
+            progress.style.display = 'none';
+            sendButton.disabled = false;
+        });
+
+        // Replace the sendFile function in sender.html with:
+
+            function sendFile(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+
+                    reader.onload = function (e) {
+                        // Find an available desktop device
+                        socket.emit('find-devices', {}, (devices) => {
+                            const desktopDevices = devices.filter(d => d.type === 'desktop-app');
+                            if (desktopDevices.length === 0) {
+                                reject(new Error('No desktop devices available'));
+                                return;
+                            }
+
+                            // Send to first available desktop
+                            socket.emit('file-transfer-request', {
+                                receiverId: desktopDevices[0].id,
+                                fileName: file.name,
+                                fileSize: file.size,
+                                fileType: file.type,
+                                content: e.target.result
+                            });
+                        });
+                    };
+
+                    reader.onerror = function () {
+                        reject(new Error('Error reading file'));
+                    };
+
+                    reader.onprogress = function (e) {
+                        if (e.lengthComputable) {
+                            const percentage = (e.loaded / e.total) * 100;
+                            progressFill.style.width = percentage + '%';
+                            progressText.textContent = Math.round(percentage) + '%';
+                        }
+                    };
+
+                    reader.readAsArrayBuffer(file);
+                });
+            }
+
+            // Add these event listeners:
+
+            socket.on('transfer-rejected', (data) => {
+                alert(`Transfer of ${data.fileName} was rejected by the receiver`);
+                progress.style.display = 'none';
+            });
+
+            socket.on('transfer-cancelled', (data) => {
+                alert('Transfer was cancelled: ' + data.reason);
+                progress.style.display = 'none';
+            });
+
+        socket.on('transfer-complete', ({ filePath }) => {
+            alert('Transfer complete!');
+        });
+
+        socket.on('transfer-error', ({ message }) => {
+            alert('Transfer error: ' + message);
+            progress.style.display = 'none';
+            sendButton.disabled = false;
+        });
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+    </script>
+</body>
+
+</html>

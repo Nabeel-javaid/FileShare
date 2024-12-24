@@ -1,73 +1,211 @@
 const { app, BrowserWindow } = require("electron");
 const { networkInterfaces } = require("os");
-const Bonjour = require("bonjour");
 const path = require("path");
 const http = require("http");
+const express = require("express");
 const socketIo = require("socket.io");
+const fs = require('fs');
 
 let mainWindow;
+let server;
+let io;
 
-// Start Bonjour for device discovery
-const bonjour = new Bonjour();
-bonjour.publish({ name: "FileTransferApp", type: "http", port: 3000 });
+function createServer() {
+    const expressApp = express();
+    server = http.createServer(expressApp);
 
-const devices = {};
-const server = http.createServer();
-const io = socketIo(server);
+    // Serve static files from public directory
+    expressApp.use(express.static(path.join(__dirname, 'public')));
 
-// Handle socket.io events
-io.on("connection", (socket) => {
-  console.log("A new device connected!");
+    io = socketIo(server, {
+        cors: {
+            origin: "*",
+            methods: ["GET", "POST"]
+        }
+    });
 
-  socket.on("register-device", (data) => {
-    devices[socket.id] = data;
-    socket.broadcast.emit("device-list", Object.values(devices));
-  });
+    const devices = new Map();
+    const pendingTransfers = new Map();
 
-  socket.on("send-file-request", (data) => {
-    const { receiverId, senderName, fileName } = data;
-    io.to(receiverId).emit("file-request", { senderName, fileName, senderId: socket.id });
-  });
+    io.on("connection", (socket) => {
+        console.log("New device connected:", socket.id);
 
-  socket.on("file-accept", (data) => {
-    io.to(data.senderId).emit("file-accepted", { receiverId: socket.id });
-  });
+        socket.on("register-device", (data) => {
+            const deviceInfo = {
+                id: socket.id,
+                name: data.name || 'Unknown Device',
+                type: data.type || 'unknown',
+                lastSeen: Date.now()
+            };
+            
+            devices.set(socket.id, deviceInfo);
+            io.emit("device-list", Array.from(devices.values()));
+            console.log("Device registered:", deviceInfo);
+        });
 
-  socket.on("file-reject", (data) => {
-    io.to(data.senderId).emit("file-rejected");
-  });
+        // Handle initial file transfer request
+        socket.on("file-transfer-request", (data) => {
+            const { receiverId, fileName, fileSize, fileType, content } = data;
+            const sender = devices.get(socket.id);
+            const receiver = devices.get(receiverId);
 
-  socket.on("send-file", (data) => {
-    const { receiverId, fileName, fileContent } = data;
-    io.to(receiverId).emit("receive-file", { fileName, fileContent });
-  });
+            if (!sender || !receiver) {
+                socket.emit("transfer-error", { message: "Invalid sender or receiver" });
+                return;
+            }
 
-  socket.on("disconnect", () => {
-    delete devices[socket.id];
-    socket.broadcast.emit("device-list", Object.values(devices));
-  });
-});
+            const transferId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+            
+            // Store transfer info
+            pendingTransfers.set(transferId, {
+                senderId: socket.id,
+                senderName: sender.name,
+                receiverId: receiverId,
+                fileName: fileName,
+                fileSize: fileSize,
+                fileType: fileType,
+                content: content,
+                status: 'pending'
+            });
 
-server.listen(3000, () => {
-  console.log("Server is running on port 3000");
-});
+            // Send request to receiver
+            io.to(receiverId).emit("file-request", {
+                transferId,
+                senderName: sender.name,
+                fileName,
+                fileSize
+            });
 
-// Electron app setup
-app.on("ready", () => {
-  mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
-    webPreferences: {
-      preload: path.join(__dirname, "renderer.js"),
-      nodeIntegration: true,
-    },
-  });
+            console.log(`File transfer request sent: ${transferId}`);
+        });
 
-  mainWindow.loadFile("index.html");
+        // Handle receiver's response
+        socket.on("file-response", (data) => {
+            const { transferId, accepted } = data;
+            const transfer = pendingTransfers.get(transferId);
+
+            if (!transfer) {
+                socket.emit("transfer-error", { message: "Invalid transfer ID" });
+                return;
+            }
+
+            if (accepted) {
+                try {
+                    // Create Downloads/FileTransfer directory
+                    const downloadPath = path.join(app.getPath('downloads'), 'FileTransfer');
+                    if (!fs.existsSync(downloadPath)) {
+                        fs.mkdirSync(downloadPath, { recursive: true });
+                    }
+
+                    // Save the file
+                    const filePath = path.join(downloadPath, transfer.fileName);
+                    fs.writeFileSync(filePath, Buffer.from(transfer.content));
+
+                    // Notify both parties
+                    io.to(transfer.senderId).emit("transfer-complete", {
+                        message: `${transfer.fileName} was sent successfully`
+                    });
+                    io.to(transfer.receiverId).emit("transfer-complete", {
+                        fileName: transfer.fileName,
+                        filePath: filePath
+                    });
+
+                    console.log(`File saved: ${filePath}`);
+                } catch (error) {
+                    console.error("File save error:", error);
+                    io.to(transfer.senderId).emit("transfer-error", {
+                        message: "Failed to save file"
+                    });
+                }
+            } else {
+                // Notify sender that transfer was rejected
+                io.to(transfer.senderId).emit("transfer-rejected", {
+                    fileName: transfer.fileName
+                });
+            }
+
+            // Clean up
+            pendingTransfers.delete(transferId);
+        });
+
+        socket.on("disconnect", () => {
+            console.log("Device disconnected:", socket.id);
+            devices.delete(socket.id);
+            io.emit("device-list", Array.from(devices.values()));
+
+            // Clean up any pending transfers
+            for (const [transferId, transfer] of pendingTransfers.entries()) {
+                if (transfer.senderId === socket.id || transfer.receiverId === socket.id) {
+                    const otherParty = transfer.senderId === socket.id ? 
+                        transfer.receiverId : transfer.senderId;
+                    
+                    io.to(otherParty).emit("transfer-cancelled", {
+                        transferId,
+                        reason: "Other party disconnected"
+                    });
+                    pendingTransfers.delete(transferId);
+                }
+            }
+        });
+    });
+
+    const port = 3000;
+    server.listen(port, "0.0.0.0", () => {
+        const localIP = getLocalIP();
+        console.log(`Server running at http://${localIP}:${port}`);
+    });
+}
+
+function getLocalIP() {
+    const interfaces = networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const interface of interfaces[name]) {
+            if (interface.family === 'IPv4' && !interface.internal) {
+                return interface.address;
+            }
+        }
+    }
+    return '127.0.0.1';
+}
+
+function createWindow() {
+    mainWindow = new BrowserWindow({
+        width: 1024,
+        height: 768,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        }
+    });
+
+    mainWindow.loadFile("index.html");
+    mainWindow.webContents.openDevTools();
+
+    mainWindow.on('closed', () => {
+        mainWindow = null;
+    });
+}
+
+app.whenReady().then(() => {
+    createServer();
+    createWindow();
+
+    app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            createWindow();
+        }
+    });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+    if (process.platform !== "darwin") {
+        if (server) {
+            server.close();
+        }
+        app.quit();
+    }
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
 });
